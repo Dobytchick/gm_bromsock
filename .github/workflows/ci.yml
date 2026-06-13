@@ -72,11 +72,11 @@ jobs:
           $tripletFile = "$tripletDir\x86-windows-static-md.cmake"
           if (-not (Test-Path $tripletFile)) {
             New-Item -ItemType Directory -Force $tripletDir | Out-Null
-            Set-Content $tripletFile @'
-set(VCPKG_TARGET_ARCHITECTURE x86)
-set(VCPKG_CRT_LINKAGE dynamic)
-set(VCPKG_LIBRARY_LINKAGE static)
-'@
+            @(
+              'set(VCPKG_TARGET_ARCHITECTURE x86)',
+              'set(VCPKG_CRT_LINKAGE dynamic)',
+              'set(VCPKG_LIBRARY_LINKAGE static)'
+            ) | Set-Content $tripletFile
           }
           vcpkg install openssl:x86-windows-static-md
 
