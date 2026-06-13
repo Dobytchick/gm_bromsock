@@ -10,11 +10,12 @@ permissions:
   contents: write
 
 jobs:
-  build-linux-ssl:
+ build-linux-ssl:
     name: Linux (SSL)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Build inside Ubuntu 18.04 container
         run: |
           docker run --rm \
@@ -63,62 +64,87 @@ jobs:
 
       - uses: microsoft/setup-msbuild@v2
 
-      - name: Install OpenSSL x86-static via vcpkg
-        run: vcpkg install openssl:x86-windows-static
-        shell: pwsh
-
-      - name: Patch vcxproj for CI
+      - name: Install OpenSSL x86-static-md via vcpkg
         shell: pwsh
         run: |
-          $proj    = "Source\gm_bromsock\gm_bromsock.vcxproj"
-          $vcpkg   = "C:\vcpkg\installed\x86-windows-static"
-          $content = Get-Content $proj -Raw
+          # Community triplet: static libs built with /MD (dynamic CRT)
+          $tripletDir  = "$env:VCPKG_INSTALLATION_ROOT\triplets\community"
+          $tripletFile = "$tripletDir\x86-windows-static-md.cmake"
+          if (-not (Test-Path $tripletFile)) {
+            New-Item -ItemType Directory -Force $tripletDir | Out-Null
+            Set-Content $tripletFile @'
+set(VCPKG_TARGET_ARCHITECTURE x86)
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE static)
+'@
+          }
+          vcpkg install openssl:x86-windows-static-md
 
-          # Replace hardcoded OpenSSL include paths
-          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\include'), "$vcpkg\include"
+      - name: Patch vcxproj via XML API
+        shell: pwsh
+        run: |
+          $vcpkg = "$env:VCPKG_INSTALLATION_ROOT\installed\x86-windows-static-md"
+          $proj  = "Source\gm_bromsock\gm_bromsock.vcxproj"
 
-          # Replace hardcoded OpenSSL lib directory paths
-          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\lib\VC\static'), "$vcpkg\lib"
-          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\lib\VC'),        "$vcpkg\lib"
+          [xml]$xml = Get-Content $proj -Encoding UTF8
 
-          # Replace OpenSSL 1.0 lib names (libeay32/ssleay32) with OpenSSL 1.1 names
-          $content = $content -replace 'libeay32[^;]*(?:;[^;]*)*?ssleay32[^<]*', 'libssl.lib;libcrypto.lib;Crypt32.lib;ws2_32.lib'
+          $xml.Project.PropertyGroup |
+            Where-Object { $_.IncludePath -match 'OpenSSL' } |
+            ForEach-Object {
+              $_.IncludePath = "$vcpkg\include;" + ($_.IncludePath -replace '[^;]*OpenSSL[^;]*;?', '')
+            }
 
-          # Strip COPY commands targeting local Steam/GarrysMod installation
-          $content = $content -replace '(?m)^COPY "[^"]*Steam[^"]*"(\r?\n)?', ''
+          foreach ($idg in $xml.Project.ItemDefinitionGroup) {
+            $link = $idg.Link
+            if ($link) {
+              # Fix AdditionalLibraryDirectories
+              if ($link.AdditionalLibraryDirectories -match 'OpenSSL') {
+                $link.AdditionalLibraryDirectories = "$vcpkg\lib"
+              }
+              if ($link.AdditionalDependencies -match 'leay32') {
+                $link.AdditionalDependencies = "libssl.lib;libcrypto.lib;Crypt32.lib;ws2_32.lib;%(AdditionalDependencies)"
+              }
+            }
+            # Remove PostBuildEvent lines that COPY to the developer's local Steam path
+            if ($idg.PostBuildEvent -and $idg.PostBuildEvent.Command -match 'Steam') {
+              $idg.PostBuildEvent.Command = (
+                $idg.PostBuildEvent.Command -split "`r?`n" |
+                Where-Object { $_ -notmatch 'Steam' }
+              ) -join "`r`n"
+            }
+          }
 
-          Set-Content $proj $content
+          $xml.Save((Resolve-Path $proj).Path)
 
       - name: Build SSL (Release)
+        shell: pwsh
         run: >
           msbuild Source\gm_bromsock.sln
           /p:Configuration=Release
           /p:Platform=Win32
           /p:PlatformToolset=v143
           /nologo /verbosity:minimal
-        shell: pwsh
 
       - name: Build no-SSL (release_noSSL)
+        shell: pwsh
         run: >
           msbuild Source\gm_bromsock.sln
           /p:Configuration=release_noSSL
           /p:Platform=Win32
           /p:PlatformToolset=v143
           /nologo /verbosity:minimal
-        shell: pwsh
 
       - name: Stage artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "Source\gm_bromsock\Release\gm_bromsock.dll"              "dist\gmsv_bromsock_win32.dll"
-          Copy-Item "Source\gm_bromsock\release_noSSL\gm_bromsock_nossl.dll"  "dist\gmsv_bromsock_win32_nossl.dll"
+          Copy-Item "Source\gm_bromsock\Release\gm_bromsock.dll"             "dist\gmsv_bromsock_win32.dll"
+          Copy-Item "Source\gm_bromsock\release_noSSL\gm_bromsock_nossl.dll" "dist\gmsv_bromsock_win32_nossl.dll"
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/
-
   release:
     name: Release
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
@@ -146,10 +172,10 @@ jobs:
       - name: Rename artifacts for release
         if: steps.semver.outputs.new_tag != ''
         run: |
-          mv dist/linux-ssl/gmsv_bromsock_linux.so       dist/gmsv_bromsock_linux.dll
+          mv dist/linux-ssl/gmsv_bromsock_linux.so        dist/gmsv_bromsock_linux.dll
           mv dist/linux-nossl/gmsv_bromsock_linux_nossl.so dist/gmsv_bromsock_linux_nossl.dll
-          mv dist/windows/gmsv_bromsock_win32.dll         dist/gmsv_bromsock_win32.dll
-          mv dist/windows/gmsv_bromsock_win32_nossl.dll   dist/gmsv_bromsock_win32_nossl.dll
+          mv dist/windows/gmsv_bromsock_win32.dll          dist/gmsv_bromsock_win32.dll
+          mv dist/windows/gmsv_bromsock_win32_nossl.dll    dist/gmsv_bromsock_win32_nossl.dll
 
       - name: Publish GitHub Release
         if: steps.semver.outputs.new_tag != ''
