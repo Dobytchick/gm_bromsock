@@ -138,8 +138,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "Source\gm_bromsock\Release\gm_bromsock.dll"             "dist\gmsv_bromsock_win32.dll"
-          Copy-Item "Source\gm_bromsock\release_noSSL\gm_bromsock_nossl.dll" "dist\gmsv_bromsock_win32_nossl.dll"
+          Copy-Item "Source\Release\gm_bromsock.dll"             "dist\gmsv_bromsock_win32.dll"
+          Copy-Item "Source\release_noSSL\gm_bromsock_nossl.dll" "dist\gmsv_bromsock_win32_nossl.dll"
 
       - uses: actions/upload-artifact@v4
         with:
