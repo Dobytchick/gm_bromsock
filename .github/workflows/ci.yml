@@ -13,21 +13,21 @@ jobs:
   build-linux-ssl:
     name: Linux (SSL)
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:18.04
     steps:
-      - name: Install build tools
-        run: |
-          apt-get update -qq
-          dpkg --add-architecture i386
-          apt-get update -qq
-          apt-get install -y git gcc-multilib g++-multilib make libssl1.0-dev:i386
-
       - uses: actions/checkout@v4
-
-      - name: Build
-        working-directory: Source/gm_bromsock
-        run: make -f Makefile_ssl
+      - name: Build inside Ubuntu 18.04 container
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            ubuntu:18.04 \
+            bash -c "
+              set -e
+              dpkg --add-architecture i386
+              apt-get update -qq
+              apt-get install -y gcc-multilib g++-multilib make libssl1.0-dev:i386
+              cd /src/Source/gm_bromsock
+              make -f Makefile_ssl
+            "
 
       - uses: actions/upload-artifact@v4
         with:
