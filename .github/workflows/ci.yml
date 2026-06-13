@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
- build-linux-ssl:
+  build-linux-ssl:
     name: Linux (SSL)
     runs-on: ubuntu-latest
     steps:
