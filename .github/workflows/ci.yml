@@ -1,0 +1,165 @@
+name: CI / Release
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-ssl:
+    name: Linux (SSL)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:18.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update -qq
+          dpkg --add-architecture i386
+          apt-get update -qq
+          apt-get install -y git gcc-multilib g++-multilib make libssl1.0-dev:i386
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        working-directory: Source/gm_bromsock
+        run: make -f Makefile_ssl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-ssl
+          path: Source/gm_bromsock/gmsv_bromsock_linux.so
+
+  build-linux-nossl:
+    name: Linux (no SSL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-multilib g++-multilib make
+
+      - name: Build
+        working-directory: Source/gm_bromsock
+        run: make -f Makefile_nossl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-nossl
+          path: Source/gm_bromsock/gmsv_bromsock_linux_nossl.so
+
+  build-windows:
+    name: Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Install OpenSSL x86-static via vcpkg
+        run: vcpkg install openssl:x86-windows-static
+        shell: pwsh
+
+      - name: Patch vcxproj for CI
+        shell: pwsh
+        run: |
+          $proj    = "Source\gm_bromsock\gm_bromsock.vcxproj"
+          $vcpkg   = "C:\vcpkg\installed\x86-windows-static"
+          $content = Get-Content $proj -Raw
+
+          # Replace hardcoded OpenSSL include paths
+          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\include'), "$vcpkg\include"
+
+          # Replace hardcoded OpenSSL lib directory paths
+          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\lib\VC\static'), "$vcpkg\lib"
+          $content = $content -replace [regex]::Escape('E:\AutoSync\Programming\Libs\OpenSSL\lib\VC'),        "$vcpkg\lib"
+
+          # Replace OpenSSL 1.0 lib names (libeay32/ssleay32) with OpenSSL 1.1 names
+          $content = $content -replace 'libeay32[^;]*(?:;[^;]*)*?ssleay32[^<]*', 'libssl.lib;libcrypto.lib;Crypt32.lib;ws2_32.lib'
+
+          # Strip COPY commands targeting local Steam/GarrysMod installation
+          $content = $content -replace '(?m)^COPY "[^"]*Steam[^"]*"(\r?\n)?', ''
+
+          Set-Content $proj $content
+
+      - name: Build SSL (Release)
+        run: >
+          msbuild Source\gm_bromsock.sln
+          /p:Configuration=Release
+          /p:Platform=Win32
+          /p:PlatformToolset=v143
+          /nologo /verbosity:minimal
+        shell: pwsh
+
+      - name: Build no-SSL (release_noSSL)
+        run: >
+          msbuild Source\gm_bromsock.sln
+          /p:Configuration=release_noSSL
+          /p:Platform=Win32
+          /p:PlatformToolset=v143
+          /nologo /verbosity:minimal
+        shell: pwsh
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "Source\gm_bromsock\Release\gm_bromsock.dll"              "dist\gmsv_bromsock_win32.dll"
+          Copy-Item "Source\gm_bromsock\release_noSSL\gm_bromsock_nossl.dll"  "dist\gmsv_bromsock_win32_nossl.dll"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  release:
+    name: Release
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    needs: [build-linux-ssl, build-linux-nossl, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next semantic version
+        id: semver
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          default_bump: false
+          tag_prefix: v
+
+      - name: Download artifacts
+        if: steps.semver.outputs.new_tag != ''
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Rename artifacts for release
+        if: steps.semver.outputs.new_tag != ''
+        run: |
+          mv dist/linux-ssl/gmsv_bromsock_linux.so       dist/gmsv_bromsock_linux.dll
+          mv dist/linux-nossl/gmsv_bromsock_linux_nossl.so dist/gmsv_bromsock_linux_nossl.dll
+          mv dist/windows/gmsv_bromsock_win32.dll         dist/gmsv_bromsock_win32.dll
+          mv dist/windows/gmsv_bromsock_win32_nossl.dll   dist/gmsv_bromsock_win32_nossl.dll
+
+      - name: Publish GitHub Release
+        if: steps.semver.outputs.new_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.new_tag }}
+          name: "Release ${{ steps.semver.outputs.new_tag }}"
+          body: ${{ steps.semver.outputs.changelog }}
+          files: |
+            dist/gmsv_bromsock_linux.dll
+            dist/gmsv_bromsock_linux_nossl.dll
+            dist/gmsv_bromsock_win32.dll
+            dist/gmsv_bromsock_win32_nossl.dll
