@@ -139,7 +139,11 @@ namespace GMBSOCK {
 
 		OpenSSL_add_all_algorithms();
 		SSL_load_error_strings();
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
 		method = TLSv1_2_client_method();
+#else
+		method = TLS_client_method();
+#endif
 		ctx = SSL_CTX_new(method);
 
 		if (ctx == NULL) {
